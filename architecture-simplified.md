@@ -76,10 +76,10 @@ graph TB
 
     STRATEGY -->|Decides rebalance| EXECUTOR
     EXECUTOR -->|Signs with| AGENT_EOA
-    AGENT_EOA -->|Calls vault.rebalance()| VAULT
+    AGENT_EOA -->|Calls rebalance| VAULT
 
-    VAULT -->|Validates caller = agent| AGENT_ROLE
-    VAULT -->|Validates target in| ALLOWLIST
+    VAULT -->|Validates caller| AGENT_ROLE
+    VAULT -->|Validates target| ALLOWLIST
     VAULT -->|Executes| KINETIC
     VAULT -->|Executes| FIRELIGHT
 
