@@ -1131,6 +1131,312 @@ module.exports = AgentOrchestrator;
 
 ---
 
+## Understanding the Data Flow: How Strategy Engine Knows User Preferences
+
+### The Question
+**How does the Strategy Engine know which protocols a user has approved?**
+
+### The Answer
+The Strategy Engine reads user preferences directly from the smart contract via RPC calls. The smart contract is the **source of truth**.
+
+---
+
+### Complete Data Flow Diagram
+
+```mermaid
+sequenceDiagram
+    participant Orchestrator as Agent Orchestrator
+    participant Contract as Contract Service
+    participant Blockchain as Smart Contract
+    participant Strategy as Strategy Engine
+    participant Executor as Transaction Executor
+
+    Note over Orchestrator: Agent cycle starts (every 4 hours)
+
+    Orchestrator->>Contract: loadUserData(users)
+
+    loop For each user
+        Contract->>Blockchain: getApprovedProtocols(alice)
+        Blockchain-->>Contract: ['0xKinetic', '0xFirelight']
+
+        Contract->>Blockchain: getUserBalances(alice)
+        Blockchain-->>Contract: { vaultBalance, protocolBalances }
+    end
+
+    Contract-->>Orchestrator: { positions, approvedProtocols }
+
+    Orchestrator->>Strategy: analyzeUser(alice, positions, approvedProtocols, yields)
+
+    Note over Strategy: Only considers approved protocols:<br/>Kinetic (5% APY)<br/>Firelight (6.8% APY)
+
+    Strategy-->>Orchestrator: Decision: Move to Firelight (+1.8% APY)
+
+    Orchestrator->>Executor: executeRebalance(decision)
+
+    Executor->>Blockchain: vault.rebalance(alice, Kinetic, Firelight, ...)
+
+    Note over Blockchain: VALIDATES:<br/>1. Is caller authorized agent?<br/>2. Is Firelight in alice's approvedProtocols?<br/>3. Does alice have sufficient balance?
+
+    alt Validation Passed
+        Blockchain-->>Executor: Transaction success ✓
+    else Validation Failed
+        Blockchain-->>Executor: Transaction reverted ✗
+    end
+```
+
+---
+
+### Step-by-Step Breakdown
+
+#### Step 1: Orchestrator Requests User Data
+
+```javascript
+// src/services/agent/AgentOrchestrator.js
+
+async loadUserData(users) {
+    const approvedProtocols = {};
+
+    for (const user of users) {
+        // Read from smart contract (blockchain)
+        approvedProtocols[user.address] = await this.contractService.getApprovedProtocols(user.address);
+        // Returns: ['0xKinetic...', '0xFirelight...']
+    }
+
+    return { positions, approvedProtocols };
+}
+```
+
+#### Step 2: Contract Service Queries Blockchain
+
+```javascript
+// src/services/blockchain/ContractService.js
+
+async getApprovedProtocols(userAddress) {
+    try {
+        // Calls smart contract's view function via RPC
+        const protocols = await this.vault.getApprovedProtocols(userAddress);
+
+        logger.debug(`User ${userAddress} has ${protocols.length} approved protocols`);
+
+        return protocols;
+        // Example return: ['0xKinetic...', '0xFirelight...']
+    } catch (error) {
+        logger.error(`Error fetching approved protocols:`, error);
+        throw error;
+    }
+}
+```
+
+#### Step 3: Smart Contract Returns On-Chain Data
+
+```solidity
+// contracts/KimeraVault.sol
+
+// This is a VIEW function (no gas cost, read-only)
+function getApprovedProtocols(address user) external view returns (address[] memory) {
+    return userProtocolList[user];
+    // Returns the on-chain stored array
+}
+```
+
+**On-Chain Storage:**
+```
+Alice (0xAlice...):
+├── approvedProtocols[0xAlice][0xKinetic] = true
+├── approvedProtocols[0xAlice][0xFirelight] = true
+└── userProtocolList[0xAlice] = [0xKinetic, 0xFirelight]
+```
+
+#### Step 4: Strategy Engine Receives and Uses Data
+
+```javascript
+// src/services/agent/StrategyEngine.js
+
+async analyzeUser(userAddress, currentPositions, approvedProtocols, protocolYields) {
+    // approvedProtocols = ['0xKinetic', '0xFirelight']
+
+    // Find best protocol from approved list ONLY
+    const bestProtocol = this.findBestProtocol(approvedProtocols, protocolYields);
+
+    // Strategy engine will NEVER suggest a non-approved protocol
+}
+
+findBestProtocol(approvedProtocols, protocolYields) {
+    let bestProtocol = null;
+    let bestAPY = 0;
+
+    // Loop through ONLY approved protocols
+    for (const protocolAddress of approvedProtocols) {
+        const yieldData = protocolYields[protocolAddress];
+
+        if (yieldData && yieldData.apy > bestAPY) {
+            bestAPY = yieldData.apy;
+            bestProtocol = yieldData;
+        }
+    }
+
+    return bestProtocol;
+}
+```
+
+#### Step 5: Smart Contract Enforces (Double Validation)
+
+```javascript
+// Executor tries to execute the decision
+await vault.rebalance(
+    alice,
+    kineticAddress,
+    firelightAddress,  // ← Strategy engine chose this
+    amount,
+    withdrawData,
+    depositData,
+    reason
+);
+```
+
+```solidity
+// Smart contract validates AGAIN (enforcement layer)
+function rebalance(...) external {
+    // Validation 1: Is caller the authorized agent?
+    require(msg.sender == authorizedAgents[user], "Not authorized");
+
+    // Validation 2: Is target protocol approved? (ENFORCED)
+    require(approvedProtocols[user][toProtocol], "Protocol not approved");
+
+    // If validation passes, execute
+    // If validation fails, REVERT (transaction fails)
+}
+```
+
+---
+
+### Two-Layer Security Model
+
+#### Layer 1: Strategy Engine (Read-Only)
+- **Reads** approved protocols from blockchain
+- **Suggests** rebalancing within those protocols
+- **Cannot enforce** (just makes recommendations)
+
+#### Layer 2: Smart Contract (Enforcement)
+- **Validates** every rebalance transaction
+- **Enforces** protocol allowlist on-chain
+- **Reverts** if agent tries to use unapproved protocol
+
+**Why this matters:**
+Even if the AI agent is compromised, it **cannot** move funds to unapproved protocols because the smart contract is the final enforcement layer.
+
+---
+
+### Performance Optimization: Database Cache
+
+For faster reads, you can cache approved protocols in the database:
+
+#### Option A: Read from Blockchain (Slower, Always Accurate)
+```javascript
+// ~100ms per user
+const protocols = await vault.getApprovedProtocols(userAddress);
+```
+
+#### Option B: Read from Database Cache (Faster, Might Be Stale)
+```javascript
+// ~1ms per user
+const result = await db.query(
+    'SELECT protocol_address FROM approved_protocols WHERE user_address = $1',
+    [userAddress]
+);
+const protocols = result.rows.map(r => r.protocol_address);
+```
+
+#### Recommended: Hybrid Approach
+```javascript
+async getApprovedProtocols(userAddress) {
+    // Try cache first (fast)
+    const cached = await this.getCachedProtocols(userAddress);
+
+    if (cached && this.isCacheFresh(cached)) {
+        return cached.protocols;
+    }
+
+    // Fallback to blockchain (authoritative)
+    const protocols = await this.vault.getApprovedProtocols(userAddress);
+
+    // Update cache
+    await this.updateCache(userAddress, protocols);
+
+    return protocols;
+}
+```
+
+**Important:** Even if cache is wrong, the smart contract will catch it:
+```
+1. Cache says: [Kinetic, Firelight, VaultX]
+2. Blockchain says: [Kinetic, Firelight] (user revoked VaultX)
+3. Strategy engine suggests: Move to VaultX
+4. Smart contract rejects: "Protocol not approved" ✗
+5. Transaction reverts safely
+```
+
+---
+
+### Event Listener Keeps Cache Synced
+
+```javascript
+// When user approves a protocol
+vault.on('ProtocolApproved', async (user, protocol) => {
+    // Update database cache
+    await db.query(
+        'INSERT INTO approved_protocols (user_address, protocol_address) VALUES ($1, $2)',
+        [user, protocol]
+    );
+});
+
+// When user revokes a protocol
+vault.on('ProtocolRevoked', async (user, protocol) => {
+    // Update database cache
+    await db.query(
+        'DELETE FROM approved_protocols WHERE user_address = $1 AND protocol_address = $2',
+        [user, protocol]
+    );
+});
+```
+
+This keeps the cache in sync with blockchain in real-time.
+
+---
+
+### Summary: Data Flow at a Glance
+
+```
+User approves protocols on blockchain (via UI)
+              ↓
+Smart contract stores: approvedProtocols[user][protocol] = true
+              ↓
+Event emitted: ProtocolApproved(user, protocol)
+              ↓
+Event listener updates database cache
+              ↓
+Agent cycle starts (every 4 hours)
+              ↓
+Orchestrator loads user data:
+  - Option A: Read from blockchain (slow, authoritative)
+  - Option B: Read from cache (fast, usually accurate)
+              ↓
+Strategy engine receives approved protocols list
+              ↓
+Strategy engine makes decision (within approved protocols only)
+              ↓
+Executor submits transaction to blockchain
+              ↓
+Smart contract validates approved protocols (ENFORCEMENT)
+              ↓
+If valid: Execute ✓
+If invalid: Revert ✗
+```
+
+**Key Principle:** The smart contract is the **source of truth** and **enforcement layer**. The agent can only read and suggest, never override on-chain permissions.
+
+---
+
 ## Step 4: Event Listener (Sync On-Chain → Database)
 
 ```javascript
