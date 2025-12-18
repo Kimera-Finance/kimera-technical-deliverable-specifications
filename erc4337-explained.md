@@ -740,4 +740,3 @@ const userOp = await primeSdk.sendUserOp(
    - Low risk → Simple vault
    - Can handle delays → Try ERC-4337
 
-**Want me to help decide? Let's discuss your priorities!**
