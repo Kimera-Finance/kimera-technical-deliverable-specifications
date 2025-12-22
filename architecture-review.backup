@@ -124,6 +124,7 @@ graph TB
     subgraph "Permission System"
         ALLOWLIST[Contract Allowlist]
         FUNC_ALLOW[Function Selector Allowlist]
+        TIME_BOUND[Time Bounds]
         REVOKE[Revoke Mechanism]
     end
 
@@ -149,6 +150,7 @@ graph TB
 
     SK_MOD -->|Enforces| ALLOWLIST
     SK_MOD -->|Enforces| FUNC_ALLOW
+    SK_MOD -->|Enforces| TIME_BOUND
     SK_MOD -->|Provides| REVOKE
 
     SK_MOD -->|Validates| VALIDATOR
@@ -201,13 +203,16 @@ interface ISessionKeyModule {
         address sessionKey;
         address[] allowedContracts;
         bytes4[] allowedFunctions;
-        bool isActive;  // User can revoke anytime
+        uint256 validUntil;
+        uint256 validAfter;
+        bool isActive;
     }
 
     function createSessionKey(
         address sessionKey,
         address[] calldata allowedContracts,
-        bytes4[] calldata allowedFunctions
+        bytes4[] calldata allowedFunctions,
+        uint256 validUntil
     ) external returns (bytes32 sessionKeyId);
 
     function revokeSessionKey(bytes32 sessionKeyId) external;
@@ -251,7 +256,7 @@ sequenceDiagram
     User->>SmartAccount: createSessionKey(publicKey, permissions)
     SmartAccount->>SessionKeyModule: Install session key with allowlist
 
-    Note over SessionKeyModule: Permissions stored:<br/>- allowedContracts: [Kinetic, Firelight]<br/>- allowedFunctions: [deposit, withdraw]<br/>- NO arbitrary transfers<br/>- User can revoke anytime
+    Note over SessionKeyModule: Permissions stored:<br/>- allowedContracts: [Kinetic, Firelight]<br/>- allowedFunctions: [deposit, withdraw]<br/>- validUntil: timestamp<br/>- NO arbitrary transfers
 
     SessionKeyModule-->>SmartAccount: Session key created
     SmartAccount-->>User: SessionKeyID + confirmation
@@ -266,7 +271,7 @@ sequenceDiagram
     Bundler->>SmartAccount: validateUserOp()
     SmartAccount->>SessionKeyModule: validateSessionKey(signature, callData)
 
-    SessionKeyModule->>SessionKeyModule: Check permissions:<br/>1. Is session key active (not revoked)?<br/>2. Is target contract allowed?<br/>3. Is function selector allowed?
+    SessionKeyModule->>SessionKeyModule: Check permissions:<br/>1. Is session key active?<br/>2. Is timestamp valid?<br/>3. Is target contract allowed?<br/>4. Is function selector allowed?
 
     alt Permission Check PASSED
         SessionKeyModule-->>SmartAccount: Valid ✓
@@ -308,11 +313,13 @@ sequenceDiagram
    - Interact with contracts outside allowlist
    - Modify account ownership
    - Create/revoke other session keys
+   - Bypass time bounds
 
 2. **Session Key CAN ONLY:**
    - Call `deposit()` on whitelisted protocols
    - Call `withdraw()` to the Smart Account itself
    - Call `claimRewards()` if enabled
+   - Execute within validity window
 
 3. **User Always Retains:**
    - Full ownership via EOA
@@ -586,27 +593,73 @@ Timeline: Week 1 (blocking)
 
 ---
 
-#### **Session Key Lifecycle**
+#### 🟠 **Important: Reward Token Handling**
 
-**Decision:** Non-expiring session keys for simplicity.
+**Problem:** FXRP protocols may emit non-FXRP reward tokens. Current spec is unclear.
 
+**Recommendation:**
+
+Add explicit handling in A3:
+```solidity
+// Option 1: Disable reward claiming entirely (safest for PoC)
+interface IProtocolAdapter {
+    function deposit(uint256 amount) external returns (bool);
+    function withdraw(uint256 amount) external returns (bool);
+    // NO claimRewards() in Phase 1
+}
+
+// Option 2: Claim rewards but leave in Smart Account (no auto-compound)
+interface IProtocolAdapter {
+    function claimRewardsToAccount() external returns (address[] memory tokens, uint256[] memory amounts);
+    // User manually withdraws rewards via UI
+}
+```
+
+**Add to Technical Spec:**
+```markdown
+A3b. Reward Token Policy (Phase 1)
+Decision: Rewards accumulate in Smart Account but are NOT:
+  - Auto-compounded
+  - Auto-swapped to FXRP
+  - Included in rebalancing logic
+
+User can manually withdraw reward tokens via UI (direct owner call).
+
+Rationale:
+- Avoids swap/liquidity complexity
+- Prevents reward token price manipulation attacks
+- Keeps PoC focused on FXRP yield optimization
+
+Phase 2 scope: Auto-compounding with safety guardrails
+```
+
+---
+
+#### 🟠 **Important: Session Key Rotation & Expiry**
+
+**Current Spec:** Time-bounded session keys, but no rotation strategy.
+
+**Recommendation:**
+
+Add to A2:
 ```markdown
 A2b. Session Key Lifecycle Management
 
-Policy:
-- Session keys do NOT expire by default
-- User can revoke at any time via UI (immediate effect)
-- Security relies on contract + function allowlists, not time bounds
+Expiry Handling:
+- Session keys expire after 30 days (configurable)
+- 7-day warning shown in UI before expiry
+- User must create new session key (cannot extend existing)
 
-Rationale:
-- Simpler UX: set once and forget
-- No risk of agent stopping unexpectedly due to expiry
-- User retains full control via manual revocation
-- Core security model (allowlists) is unchanged
+Rotation Strategy:
+- User initiates rotation via UI
+- New session key created with same permissions
+- Old key marked for revocation after 24-hour overlap period
+- Agent updates to new key automatically
 
-Future consideration (Phase 2+):
-- Optional expiry can be added as user preference
-- Auto-rotation could be implemented if needed
+Security Rationale:
+- Limits blast radius of key compromise
+- Forces periodic user re-authorization
+- Prevents stale/forgotten keys
 ```
 
 **Add to B3:**
@@ -614,9 +667,12 @@ Future consideration (Phase 2+):
 B3b. Session Key Management Service
 
 Deliverables:
-- Secure key storage in AWS Secrets Manager
-- Revocation sync: detect on-chain revocation and stop agent execution
-- Key status monitoring in dashboard
+- Monitors session key expiry (7-day warning)
+- Handles key rotation without downtime
+- Secure key storage in AWS Secrets Manager with rotation policy
+- Graceful degradation: if key expired, stop execution & alert user
+
+Cost: $3k-5k (security critical)
 ```
 
 ---
@@ -731,7 +787,8 @@ interface UserPreferences {
   riskTolerance: "conservative" | "moderate" | "aggressive";
   rebalanceThreshold: number; // minimum APY delta %
   sessionKeyId: string;
-  isActive: boolean;  // User can revoke anytime
+  sessionKeyExpiry: number; // timestamp
+  isActive: boolean;
 }
 ```
 
@@ -938,7 +995,7 @@ Cost: $5k-8k (monitoring setup + runbooks)
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | ERC-4337 bundler unavailable on Flare | Medium | High | Validate in Week 1, fallback to meta-tx relay |
-| Session key compromise | Low | Critical | Allowlist restrictions, user revocation, circuit breaker |
+| Session key compromise | Low | Critical | Time-bounds, rotation, circuit breaker |
 | FXRP reward token complexity | Medium | Medium | Exclude auto-compound in Phase 1 |
 | Gas-negative rebalancing | Medium | Low | Net yield calculation with gas cost |
 | Protocol exploit during PoC | Low | High | Circuit breaker, pause mechanism |

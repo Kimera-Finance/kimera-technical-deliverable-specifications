@@ -555,7 +555,7 @@ graph LR
 
 ### 6.2 Critical Gaps & Additions Needed
 
-#### 🔴 **Critical: ERC-4337 Infrastructure Validation**
+#### **Critical: ERC-4337 Infrastructure Validation**
 
 **Problem:** Etherspot claims Flare support, but bundler/paymaster availability is unconfirmed.
 
@@ -569,7 +569,7 @@ BEFORE any development:
 
 IF bundler infrastructure is immature:
 - Fallback option: Use a meta-transaction relay instead of ERC-4337
-- Build custom bundler (adds $8k-12k)
+- Build custom bundler
 - Use direct EOA execution for PoC (defeats purpose of session keys)
 ```
 
@@ -580,8 +580,6 @@ A0. ERC-4337 Infrastructure Validation (Pre-Development)
 - UserOperation simulation
 - Gas cost analysis
 - Paymaster integration test (if applicable)
-Cost: $2k-3k (critical risk mitigation)
-Timeline: Week 1 (blocking)
 ```
 
 ---
@@ -621,7 +619,7 @@ Deliverables:
 
 ---
 
-#### 🟡 **Enhancement: Gas Estimation & Failure Recovery**
+#### **Enhancement: Gas Estimation & Failure Recovery**
 
 **Current Spec:** "Gas estimation logic" in B3, but no failure recovery detail.
 
@@ -659,7 +657,7 @@ Monitoring:
 
 ---
 
-#### 🟡 **Enhancement: Rebalancing Cost Analysis**
+#### **Enhancement: Rebalancing Cost Analysis**
 
 **Missing:** No cost/benefit analysis for rebalancing.
 
@@ -671,7 +669,7 @@ B2b. Net Yield Calculation (After Gas)
 
 Decision logic must include:
 1. Gross APY delta: new_apy - current_apy
-2. Estimated gas cost: ~$X per rebalance
+2. Estimated gas cost per rebalance
 3. Net APY improvement: gross_delta - (gas_cost / position_size)
 
 Threshold: Only rebalance if net improvement > 0.5% APY
@@ -681,7 +679,7 @@ Example:
 - Current APY: 5%
 - New APY: 5.3%
 - Gross delta: 0.3%
-- Gas cost: $5 (~30 FXRP annual equivalent = 0.3%)
+- Gas cost: ~30 FXRP annual equivalent = 0.3%
 - Net delta: 0.3% - 0.3% = 0% → DO NOT REBALANCE
 
 This prevents gas-negative rebalancing for small positions.
@@ -689,7 +687,7 @@ This prevents gas-negative rebalancing for small positions.
 
 ---
 
-#### 🟢 **Nice-to-Have: Circuit Breaker**
+#### **Nice-to-Have: Circuit Breaker**
 
 **Add to E (Security):**
 ```markdown
@@ -710,8 +708,6 @@ Actions:
 Implementation:
 - Smart contract: pausable module
 - Off-chain: kill switch in AWS
-
-Cost: $2k-3k (highly recommended for PoC)
 ```
 
 ---
@@ -806,14 +802,6 @@ E5. User Acceptance Testing
 - 3-5 external testers (non-technical users)
 - Validate "one-click UX" claim
 - Gather feedback on transparency/trust
-
-Cost Breakdown:
-- E1-E2: Included in dev work
-- E3: $3k (1 week testnet validation)
-- E4: $4k-6k (security specialist review)
-- E5: $2k (UAT coordination)
-
-Total: $9k-11k (currently under-budgeted)
 ```
 
 ---
@@ -876,60 +864,32 @@ Response:
 - Revoke all session keys
 - Notify users via UI banner
 - Post-mortem after resolution
-
-Cost: $5k-8k (monitoring setup + runbooks)
 ```
 
 ---
 
-### 6.6 Budget Revision
+### 6.6 Phased Delivery Recommendation
 
-**Original Budget:** $40k
-**Realistic with Refinements:** $58k-72k
-
-| Component | Original | Refined | Justification |
-|-----------|----------|---------|---------------|
-| ERC-4337 Infrastructure Validation | $0 | $2k-3k | Critical risk mitigation |
-| Smart Accounts + Adapters | $15k | $18k-22k | Session key complexity underestimated |
-| AI Agent Logic | $15k | $12k-15k | Deterministic rules, no ML |
-| Session Key Lifecycle | $0 | $3k-5k | Rotation + expiry handling |
-| Transaction Failure Recovery | (in $15k) | +$3k | Explicit retry/monitoring logic |
-| Testing & Security Review | (minimal) | $9k-11k | Pre-audit validation |
-| Deployment & Ops Setup | $0 | $5k-8k | AWS infra + monitoring |
-| Frontend (basic) | $10k | $8k-10k | Minimal but functional |
-| **Total** | **$40k** | **$58k-72k** | **Realistic with buffer** |
-
-**Recommendation:**
-- **Minimum viable:** $58k (tight but includes all critical components)
-- **Comfortable:** $65k (includes 10% buffer for unknowns)
-- **Safe:** $72k (includes Flare AA infrastructure contingency)
-
----
-
-### 6.7 Phased Delivery Recommendation
-
-**Phase 1A: Foundation (Weeks 1-2) - $18k**
+**Phase 1A: Foundation**
 - ERC-4337 infrastructure validation on Coston2
 - Smart Account + Factory deployment
 - Basic wallet connection UI
 
-**Phase 1B: Core Logic (Weeks 3-4) - $20k**
+**Phase 1B: Core Logic**
 - Session Key Module
 - Protocol Adapters (Kinetic + Firelight only)
 - Yield data ingestion service
 - Manual rebalancing UI
 
-**Phase 1C: Automation (Weeks 5-6) - $15k**
+**Phase 1C: Automation**
 - Strategy engine
 - Automated execution service
 - Dashboard with transaction history
 
-**Phase 1D: Hardening (Week 7) - $12k**
+**Phase 1D: Hardening**
 - Testing & security review
 - Circuit breaker implementation
 - Deployment & monitoring setup
-
-**Total: 7 weeks, $65k**
 
 ---
 
@@ -937,7 +897,7 @@ Cost: $5k-8k (monitoring setup + runbooks)
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
-| ERC-4337 bundler unavailable on Flare | Medium | High | Validate in Week 1, fallback to meta-tx relay |
+| ERC-4337 bundler unavailable on Flare | Medium | High | Validate in initial phase, fallback to meta-tx relay |
 | Session key compromise | Low | Critical | Allowlist restrictions, user revocation, circuit breaker |
 | FXRP reward token complexity | Medium | Medium | Exclude auto-compound in Phase 1 |
 | Gas-negative rebalancing | Medium | Low | Net yield calculation with gas cost |
@@ -948,7 +908,7 @@ Cost: $5k-8k (monitoring setup + runbooks)
 
 ## 8. Next Steps
 
-1. **Validate ERC-4337 on Flare (Week 1)**
+1. **Validate ERC-4337 on Flare (First Priority)**
    - Deploy test Smart Account on Coston2
    - Submit test UserOperation
    - Document findings
@@ -957,14 +917,14 @@ Cost: $5k-8k (monitoring setup + runbooks)
    - Incorporate refinements from this review
    - Get stakeholder sign-off
 
-3. **Kickoff Development (Week 2)**
+3. **Kickoff Development**
    - Smart contract development
    - Frontend scaffolding
    - AWS infrastructure setup
 
-4. **Weekly Reviews**
-   - Demo every Friday
-   - Risk review every Monday
+4. **Regular Reviews**
+   - Demo checkpoints
+   - Risk review sessions
 
 ---
 
@@ -994,28 +954,6 @@ Cost: $5k-8k (monitoring setup + runbooks)
 - **Secrets:** AWS Secrets Manager
 - **Monitoring:** CloudWatch + Sentry (error tracking)
 - **CI/CD:** GitHub Actions
-
----
-
-## Appendix B: Open Questions for Flare Team
-
-1. **ERC-4337 Support:**
-   - Is there a production-ready bundler on Coston2/Flare?
-   - Are paymasters supported? If so, how to integrate?
-   - Gas estimation differences vs. Ethereum mainnet?
-
-2. **FXRP Protocols:**
-   - Do Kinetic/Firelight emit non-FXRP reward tokens?
-   - Are there protocol-specific deposit limits or cooldown periods?
-   - Subgraph availability for each protocol?
-
-3. **FDC/TEE (Future):**
-   - Timeline for FDC production readiness?
-   - Example use case: AI agent attestations?
-
-4. **Flare AI Kit:**
-   - Is Phase 2 integration with AI Kit required?
-   - What's the interface between centralized AI (Phase 1) and AI Kit (Phase 2)?
 
 ---
 
