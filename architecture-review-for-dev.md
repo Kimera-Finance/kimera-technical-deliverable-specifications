@@ -716,7 +716,6 @@ Implementation:
 
 **Add to Technical Spec:**
 
-```markdown
 ## Data Models
 
 ### User Preferences (Frontend → DB → Agent)
@@ -759,7 +758,7 @@ interface RebalanceIntent {
   status: "pending" | "executed" | "failed" | "skipped";
 }
 ```
-```
+
 
 ---
 
@@ -903,28 +902,6 @@ Response:
 | Gas-negative rebalancing | Medium | Low | Net yield calculation with gas cost |
 | Protocol exploit during PoC | Low | High | Circuit breaker, pause mechanism |
 | Scope creep (multi-asset, swaps) | High | Medium | Strict SoW, explicit deferred features |
-
----
-
-## 8. Next Steps
-
-1. **Validate ERC-4337 on Flare (First Priority)**
-   - Deploy test Smart Account on Coston2
-   - Submit test UserOperation
-   - Document findings
-
-2. **Finalize Technical Spec**
-   - Incorporate refinements from this review
-   - Get stakeholder sign-off
-
-3. **Kickoff Development**
-   - Smart contract development
-   - Frontend scaffolding
-   - AWS infrastructure setup
-
-4. **Regular Reviews**
-   - Demo checkpoints
-   - Risk review sessions
 
 ---
 
