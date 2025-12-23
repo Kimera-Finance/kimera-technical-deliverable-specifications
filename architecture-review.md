@@ -37,6 +37,10 @@ graph TB
             FIRELIGHT_P[Firelight Protocol]
             VAULT_X_P[Vault X Protocol]
         end
+
+        subgraph "Data Source"
+            FDC_DATA[FDC On-chain Data Reader]
+        end
     end
 
     subgraph "Off-Chain AI Layer (AWS)"
@@ -46,13 +50,7 @@ graph TB
         SESSION_KEY[Session Key Storage]
     end
 
-    subgraph "Data Sources"
-        ONCHAIN[On-chain Reads]
-        SUBGRAPH[Protocol Subgraphs]
-        RPC[Flare RPC]
-    end
-
-    subgraph "ERC-4337 Infrastructure"
+    subgraph "ERC-4337 Infrastructure (Off-Chain, Third-Party)"
         BUNDLER[Bundler Service]
         PAYMASTER[Paymaster - Optional]
     end
@@ -70,9 +68,7 @@ graph TB
     USER -->|3. Configure Preferences| UI
     UI -->|4. Create Session Key| SK_MODULE
 
-    INGEST -->|Fetch APYs| ONCHAIN
-    INGEST -->|Fetch Data| SUBGRAPH
-    INGEST -->|Query| RPC
+    INGEST -->|Fetch APYs via FDC| FDC_DATA
 
     INGEST -->|Normalized Yields| STRATEGY
     STRATEGY -->|Intent| EXECUTOR
@@ -102,6 +98,41 @@ graph TB
     style EXECUTOR fill:#2196F3
     style SESSION_KEY fill:#F44336
 ```
+
+### Why Transaction Executor & Session Key Storage are Off-Chain
+
+The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain AI Layer (AWS) rather than on Flare EVM for fundamental blockchain architecture reasons:
+
+**Session Key Storage:**
+- Stores the **private key** of the session key pair
+- Private keys **cannot** be stored on-chain — blockchain data is public and anyone could read it
+- Only the **public key/address** and its permissions (allowed contracts, functions) are stored on-chain in the Session Key Module
+- The private key must remain secret off-chain to securely sign transactions
+
+**Transaction Executor:**
+- Smart contracts are **passive** — they cannot initiate transactions on their own
+- An off-chain component is required to:
+  1. Run the AI decision logic (when to rebalance)
+  2. Sign UserOperations with the private session key
+  3. Submit signed UserOperations to the bundler
+- The on-chain Session Key Module then **validates** the signature and permissions before execution
+
+**Execution Flow:**
+```
+Off-chain (AWS)                      On-chain (Flare EVM)
+─────────────────                    ────────────────────
+AI decides to rebalance
+         ↓
+Sign with private session key
+         ↓
+Submit to Bundler  ────────────────→  Session Key Module validates
+                                              ↓
+                                      Smart Account executes
+                                              ↓
+                                      Protocol interaction
+```
+
+> **Future Decentralization (Phase 2+):** The FDC/TEE integration mentioned in Appendix B could enable the AI agent to run inside a Trusted Execution Environment with cryptographic attestations, reducing reliance on centralized infrastructure while maintaining private key security.
 
 ---
 
@@ -328,15 +359,13 @@ sequenceDiagram
 flowchart TD
     START([Scheduled Trigger / Cron]) --> FETCH
 
-    FETCH[Fetch Yield Data] --> SOURCES
+    FETCH[Fetch Yield Data] --> FDC_READ
 
-    subgraph SOURCES[Data Sources]
-        RPC[RPC: On-chain reads]
-        SUBGRAPH[Subgraphs: Historical data]
-        DIRECT[Direct contract calls]
+    subgraph FDC_READ[FDC On-chain Data]
+        DIRECT[Smart Contract Reads via FDC]
     end
 
-    SOURCES --> NORMALIZE[Normalize to FXRP-native APY]
+    FDC_READ --> NORMALIZE[Normalize to FXRP-native APY]
 
     NORMALIZE --> CURRENT_STATE[Get Current Portfolio State]
 
@@ -466,17 +495,12 @@ def optimize_yield(smart_account_address, user_preferences):
 
 ```mermaid
 graph LR
-    subgraph "On-Chain (Flare)"
+    subgraph "On-Chain (Flare EVM)"
         KINETIC_C[Kinetic Contract]
         FIRELIGHT_C[Firelight Contract]
         VAULT_C[Vault Contract]
         SA_C[Smart Account]
-    end
-
-    subgraph "Off-Chain Indexing"
-        SUBGRAPH_K[Kinetic Subgraph]
-        SUBGRAPH_F[Firelight Subgraph]
-        FLARE_RPC[Flare RPC Node]
+        FDC_READER[FDC Data Reader]
     end
 
     subgraph "AI Agent - Data Layer"
@@ -501,13 +525,11 @@ graph LR
         WS[WebSocket/Polling]
     end
 
-    KINETIC_C -->|Events| SUBGRAPH_K
-    FIRELIGHT_C -->|Events| SUBGRAPH_F
-    VAULT_C -->|Events| FLARE_RPC
+    KINETIC_C -->|Yield Data| FDC_READER
+    FIRELIGHT_C -->|Yield Data| FDC_READER
+    VAULT_C -->|Yield Data| FDC_READER
 
-    FETCHER -->|Query APY| SUBGRAPH_K
-    FETCHER -->|Query APY| SUBGRAPH_F
-    FETCHER -->|Direct calls| FLARE_RPC
+    FETCHER -->|Query APY via FDC| FDC_READER
     FETCHER -->|Read positions| SA_C
 
     FETCHER -->|Store| CACHE
@@ -520,8 +542,7 @@ graph LR
     TX_BUILDER -->|UserOp| SIGNER
     SIGNER -->|Signed UserOp| BUNDLER_CLIENT
 
-    BUNDLER_CLIENT -->|Submit| FLARE_RPC
-    FLARE_RPC -->|Execute| SA_C
+    BUNDLER_CLIENT -->|Submit| SA_C
 
     SA_C -->|Events| WS
     WS -->|Updates| DASHBOARD_UI
@@ -530,6 +551,7 @@ graph LR
     style NORMALIZER fill:#2196F3
     style DECISION fill:#FF9800
     style SIGNER fill:#F44336
+    style FDC_READER fill:#9C27B0
 ```
 
 ---
@@ -743,7 +765,7 @@ interface ProtocolYield {
   tvl: number;
   utilizationRate: number;
   lastUpdated: number; // timestamp
-  dataSource: "subgraph" | "rpc" | "api";
+  dataSource: "fdc"; // FDC on-chain data reader
 }
 ```
 
@@ -1007,7 +1029,7 @@ Cost: $5k-8k (monitoring setup + runbooks)
 2. **FXRP Protocols:**
    - Do Kinetic/Firelight emit non-FXRP reward tokens?
    - Are there protocol-specific deposit limits or cooldown periods?
-   - Subgraph availability for each protocol?
+   - What on-chain data is available via FDC for each protocol?
 
 3. **FDC/TEE (Future):**
    - Timeline for FDC production readiness?
