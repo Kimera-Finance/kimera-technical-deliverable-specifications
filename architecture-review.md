@@ -602,7 +602,7 @@ A0. ERC-4337 Infrastructure Validation (Pre-Development)
 - UserOperation simulation
 - Gas cost analysis
 - Paymaster integration test (if applicable)
-Cost: $2k-3k (critical risk mitigation)
+
 Timeline: Week 1 (blocking)
 ```
 
@@ -829,13 +829,7 @@ E5. User Acceptance Testing
 - Validate "one-click UX" claim
 - Gather feedback on transparency/trust
 
-Cost Breakdown:
-- E1-E2: Included in dev work
-- E3: $3k (1 week testnet validation)
-- E4: $4k-6k (security specialist review)
-- E5: $2k (UAT coordination)
 
-Total: $9k-11k (currently under-budgeted)
 ```
 
 ---
@@ -899,60 +893,7 @@ Response:
 - Notify users via UI banner
 - Post-mortem after resolution
 
-Cost: $5k-8k (monitoring setup + runbooks)
 ```
-
----
-
-### 6.6 Budget Revision
-
-**Original Budget:** $40k
-**Realistic with Refinements:** $58k-72k
-
-| Component | Original | Refined | Justification |
-|-----------|----------|---------|---------------|
-| ERC-4337 Infrastructure Validation | $0 | $2k-3k | Critical risk mitigation |
-| Smart Accounts + Adapters | $15k | $18k-22k | Session key complexity underestimated |
-| AI Agent Logic | $15k | $12k-15k | Deterministic rules, no ML |
-| Session Key Lifecycle | $0 | $3k-5k | Rotation + expiry handling |
-| Transaction Failure Recovery | (in $15k) | +$3k | Explicit retry/monitoring logic |
-| Testing & Security Review | (minimal) | $9k-11k | Pre-audit validation |
-| Deployment & Ops Setup | $0 | $5k-8k | AWS infra + monitoring |
-| Frontend (basic) | $10k | $8k-10k | Minimal but functional |
-| **Total** | **$40k** | **$58k-72k** | **Realistic with buffer** |
-
-**Recommendation:**
-- **Minimum viable:** $58k (tight but includes all critical components)
-- **Comfortable:** $65k (includes 10% buffer for unknowns)
-- **Safe:** $72k (includes Flare AA infrastructure contingency)
-
----
-
-### 6.7 Phased Delivery Recommendation
-
-**Phase 1A: Foundation (Weeks 1-2) - $18k**
-- ERC-4337 infrastructure validation on Coston2
-- Smart Account + Factory deployment
-- Basic wallet connection UI
-
-**Phase 1B: Core Logic (Weeks 3-4) - $20k**
-- Session Key Module
-- Protocol Adapters (Kinetic + Firelight only)
-- Yield data ingestion service
-- Manual rebalancing UI
-
-**Phase 1C: Automation (Weeks 5-6) - $15k**
-- Strategy engine
-- Automated execution service
-- Dashboard with transaction history
-
-**Phase 1D: Hardening (Week 7) - $12k**
-- Testing & security review
-- Circuit breaker implementation
-- Deployment & monitoring setup
-
-**Total: 7 weeks, $65k**
-
 ---
 
 ## 7. Risk Mitigation Summary
@@ -1019,26 +960,5 @@ Cost: $5k-8k (monitoring setup + runbooks)
 
 ---
 
-## Appendix B: Open Questions for Flare Team
-
-1. **ERC-4337 Support:**
-   - Is there a production-ready bundler on Coston2/Flare?
-   - Are paymasters supported? If so, how to integrate?
-   - Gas estimation differences vs. Ethereum mainnet?
-
-2. **FXRP Protocols:**
-   - Do Kinetic/Firelight emit non-FXRP reward tokens?
-   - Are there protocol-specific deposit limits or cooldown periods?
-   - What on-chain data is available via FDC for each protocol?
-
-3. **FDC/TEE (Future):**
-   - Timeline for FDC production readiness?
-   - Example use case: AI agent attestations?
-
-4. **Flare AI Kit:**
-   - Is Phase 2 integration with AI Kit required?
-   - What's the interface between centralized AI (Phase 1) and AI Kit (Phase 2)?
-
----
 
 **End of Architecture Review**

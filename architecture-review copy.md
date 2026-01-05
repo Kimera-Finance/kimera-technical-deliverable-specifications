@@ -37,6 +37,10 @@ graph TB
             FIRELIGHT_P[Firelight Protocol]
             VAULT_X_P[Vault X Protocol]
         end
+
+        subgraph "Data Source"
+            FDC_DATA[FDC On-chain Data Reader]
+        end
     end
 
     subgraph "Off-Chain AI Layer (AWS)"
@@ -46,13 +50,7 @@ graph TB
         SESSION_KEY[Session Key Storage]
     end
 
-    subgraph "Data Sources"
-        ONCHAIN[On-chain Reads]
-        SUBGRAPH[Protocol Subgraphs]
-        RPC[Flare RPC]
-    end
-
-    subgraph "ERC-4337 Infrastructure"
+    subgraph "ERC-4337 Infrastructure (Off-Chain, Third-Party)"
         BUNDLER[Bundler Service]
         PAYMASTER[Paymaster - Optional]
     end
@@ -70,9 +68,7 @@ graph TB
     USER -->|3. Configure Preferences| UI
     UI -->|4. Create Session Key| SK_MODULE
 
-    INGEST -->|Fetch APYs| ONCHAIN
-    INGEST -->|Fetch Data| SUBGRAPH
-    INGEST -->|Query| RPC
+    INGEST -->|Fetch APYs via FDC| FDC_DATA
 
     INGEST -->|Normalized Yields| STRATEGY
     STRATEGY -->|Intent| EXECUTOR
@@ -103,6 +99,41 @@ graph TB
     style SESSION_KEY fill:#F44336
 ```
 
+### Why Transaction Executor & Session Key Storage are Off-Chain
+
+The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain AI Layer (AWS) rather than on Flare EVM for fundamental blockchain architecture reasons:
+
+**Session Key Storage:**
+- Stores the **private key** of the session key pair
+- Private keys **cannot** be stored on-chain — blockchain data is public and anyone could read it
+- Only the **public key/address** and its permissions (allowed contracts, functions) are stored on-chain in the Session Key Module
+- The private key must remain secret off-chain to securely sign transactions
+
+**Transaction Executor:**
+- Smart contracts are **passive** — they cannot initiate transactions on their own
+- An off-chain component is required to:
+  1. Run the AI decision logic (when to rebalance)
+  2. Sign UserOperations with the private session key
+  3. Submit signed UserOperations to the bundler
+- The on-chain Session Key Module then **validates** the signature and permissions before execution
+
+**Execution Flow:**
+```
+Off-chain (AWS)                      On-chain (Flare EVM)
+─────────────────                    ────────────────────
+AI decides to rebalance
+         ↓
+Sign with private session key
+         ↓
+Submit to Bundler  ────────────────→  Session Key Module validates
+                                              ↓
+                                      Smart Account executes
+                                              ↓
+                                      Protocol interaction
+```
+
+> **Future Decentralization (Phase 2+):** The FDC/TEE integration mentioned in Appendix B could enable the AI agent to run inside a Trusted Execution Environment with cryptographic attestations, reducing reliance on centralized infrastructure while maintaining private key security.
+
 ---
 
 ## 2. Smart Contract Layer Architecture
@@ -124,7 +155,6 @@ graph TB
     subgraph "Permission System"
         ALLOWLIST[Contract Allowlist]
         FUNC_ALLOW[Function Selector Allowlist]
-        TIME_BOUND[Time Bounds]
         REVOKE[Revoke Mechanism]
     end
 
@@ -150,7 +180,6 @@ graph TB
 
     SK_MOD -->|Enforces| ALLOWLIST
     SK_MOD -->|Enforces| FUNC_ALLOW
-    SK_MOD -->|Enforces| TIME_BOUND
     SK_MOD -->|Provides| REVOKE
 
     SK_MOD -->|Validates| VALIDATOR
@@ -203,16 +232,13 @@ interface ISessionKeyModule {
         address sessionKey;
         address[] allowedContracts;
         bytes4[] allowedFunctions;
-        uint256 validUntil;
-        uint256 validAfter;
-        bool isActive;
+        bool isActive;  // User can revoke anytime
     }
 
     function createSessionKey(
         address sessionKey,
         address[] calldata allowedContracts,
-        bytes4[] calldata allowedFunctions,
-        uint256 validUntil
+        bytes4[] calldata allowedFunctions
     ) external returns (bytes32 sessionKeyId);
 
     function revokeSessionKey(bytes32 sessionKeyId) external;
@@ -256,7 +282,7 @@ sequenceDiagram
     User->>SmartAccount: createSessionKey(publicKey, permissions)
     SmartAccount->>SessionKeyModule: Install session key with allowlist
 
-    Note over SessionKeyModule: Permissions stored:<br/>- allowedContracts: [Kinetic, Firelight]<br/>- allowedFunctions: [deposit, withdraw]<br/>- validUntil: timestamp<br/>- NO arbitrary transfers
+    Note over SessionKeyModule: Permissions stored:<br/>- allowedContracts: [Kinetic, Firelight]<br/>- allowedFunctions: [deposit, withdraw]<br/>- NO arbitrary transfers<br/>- User can revoke anytime
 
     SessionKeyModule-->>SmartAccount: Session key created
     SmartAccount-->>User: SessionKeyID + confirmation
@@ -271,7 +297,7 @@ sequenceDiagram
     Bundler->>SmartAccount: validateUserOp()
     SmartAccount->>SessionKeyModule: validateSessionKey(signature, callData)
 
-    SessionKeyModule->>SessionKeyModule: Check permissions:<br/>1. Is session key active?<br/>2. Is timestamp valid?<br/>3. Is target contract allowed?<br/>4. Is function selector allowed?
+    SessionKeyModule->>SessionKeyModule: Check permissions:<br/>1. Is session key active (not revoked)?<br/>2. Is target contract allowed?<br/>3. Is function selector allowed?
 
     alt Permission Check PASSED
         SessionKeyModule-->>SmartAccount: Valid ✓
@@ -313,13 +339,11 @@ sequenceDiagram
    - Interact with contracts outside allowlist
    - Modify account ownership
    - Create/revoke other session keys
-   - Bypass time bounds
 
 2. **Session Key CAN ONLY:**
    - Call `deposit()` on whitelisted protocols
    - Call `withdraw()` to the Smart Account itself
    - Call `claimRewards()` if enabled
-   - Execute within validity window
 
 3. **User Always Retains:**
    - Full ownership via EOA
@@ -335,15 +359,13 @@ sequenceDiagram
 flowchart TD
     START([Scheduled Trigger / Cron]) --> FETCH
 
-    FETCH[Fetch Yield Data] --> SOURCES
+    FETCH[Fetch Yield Data] --> FDC_READ
 
-    subgraph SOURCES[Data Sources]
-        RPC[RPC: On-chain reads]
-        SUBGRAPH[Subgraphs: Historical data]
-        DIRECT[Direct contract calls]
+    subgraph FDC_READ[FDC On-chain Data]
+        DIRECT[Smart Contract Reads via FDC]
     end
 
-    SOURCES --> NORMALIZE[Normalize to FXRP-native APY]
+    FDC_READ --> NORMALIZE[Normalize to FXRP-native APY]
 
     NORMALIZE --> CURRENT_STATE[Get Current Portfolio State]
 
@@ -473,17 +495,12 @@ def optimize_yield(smart_account_address, user_preferences):
 
 ```mermaid
 graph LR
-    subgraph "On-Chain (Flare)"
+    subgraph "On-Chain (Flare EVM)"
         KINETIC_C[Kinetic Contract]
         FIRELIGHT_C[Firelight Contract]
         VAULT_C[Vault Contract]
         SA_C[Smart Account]
-    end
-
-    subgraph "Off-Chain Indexing"
-        SUBGRAPH_K[Kinetic Subgraph]
-        SUBGRAPH_F[Firelight Subgraph]
-        FLARE_RPC[Flare RPC Node]
+        FDC_READER[FDC Data Reader]
     end
 
     subgraph "AI Agent - Data Layer"
@@ -508,13 +525,11 @@ graph LR
         WS[WebSocket/Polling]
     end
 
-    KINETIC_C -->|Events| SUBGRAPH_K
-    FIRELIGHT_C -->|Events| SUBGRAPH_F
-    VAULT_C -->|Events| FLARE_RPC
+    KINETIC_C -->|Yield Data| FDC_READER
+    FIRELIGHT_C -->|Yield Data| FDC_READER
+    VAULT_C -->|Yield Data| FDC_READER
 
-    FETCHER -->|Query APY| SUBGRAPH_K
-    FETCHER -->|Query APY| SUBGRAPH_F
-    FETCHER -->|Direct calls| FLARE_RPC
+    FETCHER -->|Query APY via FDC| FDC_READER
     FETCHER -->|Read positions| SA_C
 
     FETCHER -->|Store| CACHE
@@ -527,8 +542,7 @@ graph LR
     TX_BUILDER -->|UserOp| SIGNER
     SIGNER -->|Signed UserOp| BUNDLER_CLIENT
 
-    BUNDLER_CLIENT -->|Submit| FLARE_RPC
-    FLARE_RPC -->|Execute| SA_C
+    BUNDLER_CLIENT -->|Submit| SA_C
 
     SA_C -->|Events| WS
     WS -->|Updates| DASHBOARD_UI
@@ -537,6 +551,7 @@ graph LR
     style NORMALIZER fill:#2196F3
     style DECISION fill:#FF9800
     style SIGNER fill:#F44336
+    style FDC_READER fill:#9C27B0
 ```
 
 ---
@@ -593,73 +608,27 @@ Timeline: Week 1 (blocking)
 
 ---
 
-#### 🟠 **Important: Reward Token Handling**
+#### **Session Key Lifecycle**
 
-**Problem:** FXRP protocols may emit non-FXRP reward tokens. Current spec is unclear.
+**Decision:** Non-expiring session keys for simplicity.
 
-**Recommendation:**
-
-Add explicit handling in A3:
-```solidity
-// Option 1: Disable reward claiming entirely (safest for PoC)
-interface IProtocolAdapter {
-    function deposit(uint256 amount) external returns (bool);
-    function withdraw(uint256 amount) external returns (bool);
-    // NO claimRewards() in Phase 1
-}
-
-// Option 2: Claim rewards but leave in Smart Account (no auto-compound)
-interface IProtocolAdapter {
-    function claimRewardsToAccount() external returns (address[] memory tokens, uint256[] memory amounts);
-    // User manually withdraws rewards via UI
-}
-```
-
-**Add to Technical Spec:**
-```markdown
-A3b. Reward Token Policy (Phase 1)
-Decision: Rewards accumulate in Smart Account but are NOT:
-  - Auto-compounded
-  - Auto-swapped to FXRP
-  - Included in rebalancing logic
-
-User can manually withdraw reward tokens via UI (direct owner call).
-
-Rationale:
-- Avoids swap/liquidity complexity
-- Prevents reward token price manipulation attacks
-- Keeps PoC focused on FXRP yield optimization
-
-Phase 2 scope: Auto-compounding with safety guardrails
-```
-
----
-
-#### 🟠 **Important: Session Key Rotation & Expiry**
-
-**Current Spec:** Time-bounded session keys, but no rotation strategy.
-
-**Recommendation:**
-
-Add to A2:
 ```markdown
 A2b. Session Key Lifecycle Management
 
-Expiry Handling:
-- Session keys expire after 30 days (configurable)
-- 7-day warning shown in UI before expiry
-- User must create new session key (cannot extend existing)
+Policy:
+- Session keys do NOT expire by default
+- User can revoke at any time via UI (immediate effect)
+- Security relies on contract + function allowlists, not time bounds
 
-Rotation Strategy:
-- User initiates rotation via UI
-- New session key created with same permissions
-- Old key marked for revocation after 24-hour overlap period
-- Agent updates to new key automatically
+Rationale:
+- Simpler UX: set once and forget
+- No risk of agent stopping unexpectedly due to expiry
+- User retains full control via manual revocation
+- Core security model (allowlists) is unchanged
 
-Security Rationale:
-- Limits blast radius of key compromise
-- Forces periodic user re-authorization
-- Prevents stale/forgotten keys
+Future consideration (Phase 2+):
+- Optional expiry can be added as user preference
+- Auto-rotation could be implemented if needed
 ```
 
 **Add to B3:**
@@ -667,12 +636,9 @@ Security Rationale:
 B3b. Session Key Management Service
 
 Deliverables:
-- Monitors session key expiry (7-day warning)
-- Handles key rotation without downtime
-- Secure key storage in AWS Secrets Manager with rotation policy
-- Graceful degradation: if key expired, stop execution & alert user
-
-Cost: $3k-5k (security critical)
+- Secure key storage in AWS Secrets Manager
+- Revocation sync: detect on-chain revocation and stop agent execution
+- Key status monitoring in dashboard
 ```
 
 ---
@@ -787,8 +753,7 @@ interface UserPreferences {
   riskTolerance: "conservative" | "moderate" | "aggressive";
   rebalanceThreshold: number; // minimum APY delta %
   sessionKeyId: string;
-  sessionKeyExpiry: number; // timestamp
-  isActive: boolean;
+  isActive: boolean;  // User can revoke anytime
 }
 ```
 
@@ -800,7 +765,7 @@ interface ProtocolYield {
   tvl: number;
   utilizationRate: number;
   lastUpdated: number; // timestamp
-  dataSource: "subgraph" | "rpc" | "api";
+  dataSource: "fdc"; // FDC on-chain data reader
 }
 ```
 
@@ -995,7 +960,7 @@ Cost: $5k-8k (monitoring setup + runbooks)
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
 | ERC-4337 bundler unavailable on Flare | Medium | High | Validate in Week 1, fallback to meta-tx relay |
-| Session key compromise | Low | Critical | Time-bounds, rotation, circuit breaker |
+| Session key compromise | Low | Critical | Allowlist restrictions, user revocation, circuit breaker |
 | FXRP reward token complexity | Medium | Medium | Exclude auto-compound in Phase 1 |
 | Gas-negative rebalancing | Medium | Low | Net yield calculation with gas cost |
 | Protocol exploit during PoC | Low | High | Circuit breaker, pause mechanism |
@@ -1054,5 +1019,26 @@ Cost: $5k-8k (monitoring setup + runbooks)
 
 ---
 
+## Appendix B: Open Questions for Flare Team
+
+1. **ERC-4337 Support:**
+   - Is there a production-ready bundler on Coston2/Flare?
+   - Are paymasters supported? If so, how to integrate?
+   - Gas estimation differences vs. Ethereum mainnet?
+
+2. **FXRP Protocols:**
+   - Do Kinetic/Firelight emit non-FXRP reward tokens?
+   - Are there protocol-specific deposit limits or cooldown periods?
+   - What on-chain data is available via FDC for each protocol?
+
+3. **FDC/TEE (Future):**
+   - Timeline for FDC production readiness?
+   - Example use case: AI agent attestations?
+
+4. **Flare AI Kit:**
+   - Is Phase 2 integration with AI Kit required?
+   - What's the interface between centralized AI (Phase 1) and AI Kit (Phase 2)?
+
+---
 
 **End of Architecture Review**
