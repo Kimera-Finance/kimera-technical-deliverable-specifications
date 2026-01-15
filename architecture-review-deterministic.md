@@ -1,6 +1,6 @@
-# Kimera DeFAI Yield Agent - Architecture Review & Refinement
+# Kimera DeFAI Yield Automation - Architecture Review & Refinement
 
-**Document Version:** 1.0
+**Document Version:** 1.0-deterministic
 **Date:** 2025-12-18
 **Status:** Technical Review with Diagrams
 
@@ -43,9 +43,9 @@ graph TB
         end
     end
 
-    subgraph "Off-Chain AI Layer (AWS)"
+    subgraph "Off-Chain Automation Layer (AWS)"
         INGEST[Yield Data Ingestion]
-        STRATEGY[Strategy Engine]
+        RULES_ENGINE[Deterministic Rules Engine]
         EXECUTOR[Transaction Executor]
         SESSION_KEY[Session Key Storage]
     end
@@ -70,8 +70,8 @@ graph TB
 
     INGEST -->|Fetch APYs via FDC| FDC_DATA
 
-    INGEST -->|Normalized Yields| STRATEGY
-    STRATEGY -->|Intent| EXECUTOR
+    INGEST -->|Normalized Yields| RULES_ENGINE
+    RULES_ENGINE -->|Intent| EXECUTOR
     EXECUTOR -->|Uses| SESSION_KEY
 
     EXECUTOR -->|UserOperation| BUNDLER
@@ -101,7 +101,7 @@ graph TB
 
 ### Why Transaction Executor & Session Key Storage are Off-Chain
 
-The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain AI Layer (AWS) rather than on Flare EVM for fundamental blockchain architecture reasons:
+The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain Automation Layer (AWS) rather than on Flare EVM for fundamental blockchain architecture reasons:
 
 **Session Key Storage:**
 - Stores the **private key** of the session key pair
@@ -112,7 +112,7 @@ The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain
 **Transaction Executor:**
 - Smart contracts are **passive** — they cannot initiate transactions on their own
 - An off-chain component is required to:
-  1. Run the AI decision logic (when to rebalance)
+  1. Run the deterministic decision logic (when to rebalance)
   2. Sign UserOperations with the private session key
   3. Submit signed UserOperations to the bundler
 - The on-chain Session Key Module then **validates** the signature and permissions before execution
@@ -121,7 +121,8 @@ The **Transaction Executor** and **Session Key Storage** reside in the Off-Chain
 ```
 Off-chain (AWS)                      On-chain (Flare EVM)
 ─────────────────                    ────────────────────
-AI decides to rebalance
+Script decides to rebalance
+(based on deterministic rules)
          ↓
 Sign with private session key
          ↓
@@ -132,139 +133,9 @@ Submit to Bundler  ────────────────→  Session 
                                       Protocol interaction
 ```
 
-> **Future Decentralization (Phase 2+):** The FDC/TEE integration mentioned in Appendix B could enable the AI agent to run inside a Trusted Execution Environment with cryptographic attestations, reducing reliance on centralized infrastructure while maintaining private key security.
-
 ---
 
-## 2. Smart Contract Layer Architecture
-
-```mermaid
-graph TB
-    subgraph "Smart Account Core (ERC-4337)"
-        ACCOUNT[Smart Account Contract]
-        OWNER[Owner - User EOA]
-        ENTRY[EntryPoint Interface]
-    end
-
-    subgraph "Modular Components (ERC-7579)"
-        SK_MOD[Session Key Module]
-        VALIDATOR[Execution Validator]
-        HOOK[Optional Hooks]
-    end
-
-    subgraph "Permission System"
-        ALLOWLIST[Contract Allowlist]
-        FUNC_ALLOW[Function Selector Allowlist]
-        REVOKE[Revoke Mechanism]
-    end
-
-    subgraph "Adapter Layer"
-        BASE_ADAPTER[Base Adapter Interface]
-
-        subgraph "Protocol-Specific Adapters"
-            K_ADAPTER[Kinetic Adapter]
-            F_ADAPTER[Firelight Adapter]
-            V_ADAPTER[Vault X Adapter]
-        end
-    end
-
-    subgraph "External Protocols"
-        KINETIC_CONTRACT[Kinetic FXRP Pool]
-        FIRELIGHT_CONTRACT[Firelight Staking]
-        VAULT_CONTRACT[Vault X]
-    end
-
-    OWNER -->|Full Control| ACCOUNT
-    ACCOUNT -->|Implements| ENTRY
-    ACCOUNT -->|Installs| SK_MOD
-
-    SK_MOD -->|Enforces| ALLOWLIST
-    SK_MOD -->|Enforces| FUNC_ALLOW
-    SK_MOD -->|Provides| REVOKE
-
-    SK_MOD -->|Validates| VALIDATOR
-    VALIDATOR -->|Checks Permissions| ACCOUNT
-
-    ACCOUNT -->|Delegates to| BASE_ADAPTER
-    BASE_ADAPTER -->|Implements| K_ADAPTER
-    BASE_ADAPTER -->|Implements| F_ADAPTER
-    BASE_ADAPTER -->|Implements| V_ADAPTER
-
-    K_ADAPTER -->|deposit/withdraw| KINETIC_CONTRACT
-    F_ADAPTER -->|stake/unstake| FIRELIGHT_CONTRACT
-    V_ADAPTER -->|deposit/withdraw| VAULT_CONTRACT
-
-    ACCOUNT -->|Optional| HOOK
-
-    style ACCOUNT fill:#4CAF50
-    style SK_MOD fill:#FF9800
-    style OWNER fill:#2196F3
-    style ALLOWLIST fill:#F44336
-```
-
-### Key Contracts Specification
-
-#### Smart Account Contract
-```solidity
-// Pseudo-interface for clarity
-interface IKimeraSmartAccount {
-    // ERC-4337 required
-    function validateUserOp(UserOperation calldata userOp, bytes32 userOpHash, uint256 missingAccountFunds)
-        external returns (uint256 validationData);
-
-    // ERC-7579 module management
-    function installModule(uint256 moduleTypeId, address module, bytes calldata initData) external;
-    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData) external;
-
-    // Execution
-    function execute(address dest, uint256 value, bytes calldata func) external;
-    function executeBatch(address[] calldata dest, uint256[] calldata value, bytes[] calldata func) external;
-
-    // Owner control
-    function transferOwnership(address newOwner) external;
-}
-```
-
-#### Session Key Module
-```solidity
-interface ISessionKeyModule {
-    struct SessionKeyData {
-        address sessionKey;
-        address[] allowedContracts;
-        bytes4[] allowedFunctions;
-        bool isActive;  // User can revoke anytime
-    }
-
-    function createSessionKey(
-        address sessionKey,
-        address[] calldata allowedContracts,
-        bytes4[] calldata allowedFunctions
-    ) external returns (bytes32 sessionKeyId);
-
-    function revokeSessionKey(bytes32 sessionKeyId) external;
-
-    function validateSessionKeyExecution(
-        bytes32 sessionKeyId,
-        address target,
-        bytes calldata data
-    ) external view returns (bool);
-}
-```
-
-#### Protocol Adapter Interface
-```solidity
-interface IProtocolAdapter {
-    function deposit(uint256 amount) external returns (bool);
-    function withdraw(uint256 amount) external returns (bool);
-    function claimRewards() external returns (uint256);
-    function getBalance(address account) external view returns (uint256);
-    function getCurrentAPY() external view returns (uint256);
-}
-```
-
----
-
-## 3. Session Key Security Model & Permission Flow
+## 2. Session Key Security Model & Permission Flow
 
 ```mermaid
 sequenceDiagram
@@ -272,7 +143,7 @@ sequenceDiagram
     participant UI
     participant SmartAccount
     participant SessionKeyModule
-    participant AIAgent
+    participant AutomationScript
     participant Bundler
     participant Protocol
 
@@ -286,11 +157,11 @@ sequenceDiagram
 
     SessionKeyModule-->>SmartAccount: Session key created
     SmartAccount-->>User: SessionKeyID + confirmation
-    User->>AIAgent: Securely send private session key
+    User->>AutomationScript: Securely send private session key
 
-    Note over User,Protocol: Phase 2: AI Agent Execution
-    AIAgent->>AIAgent: Analyze yields<br/>Decision: Move from Kinetic to Firelight
-    AIAgent->>Bundler: Sign UserOp with session key
+    Note over User,Protocol: Phase 2: Automation Script Execution
+    AutomationScript->>AutomationScript: Apply deterministic rules<br/>Decision: Move from Kinetic to Firelight
+    AutomationScript->>Bundler: Sign UserOp with session key
 
     Note over Bundler: UserOp contains:<br/>- sender: SmartAccount<br/>- callData: withdraw(Kinetic) + deposit(Firelight)<br/>- signature: signed by session key
 
@@ -300,7 +171,7 @@ sequenceDiagram
     SessionKeyModule->>SessionKeyModule: Check permissions:<br/>1. Is session key active (not revoked)?<br/>2. Is target contract allowed?<br/>3. Is function selector allowed?
 
     alt Permission Check PASSED
-        SessionKeyModule-->>SmartAccount: Valid ✓
+        SessionKeyModule-->>SmartAccount: Valid
         SmartAccount-->>Bundler: Validation success
         Bundler->>SmartAccount: executeUserOp()
         SmartAccount->>Protocol: withdraw() / deposit()
@@ -308,10 +179,10 @@ sequenceDiagram
         SmartAccount->>UI: Emit event: RebalanceExecuted
         UI->>User: Show transaction in dashboard
     else Permission Check FAILED
-        SessionKeyModule-->>SmartAccount: Invalid ✗
+        SessionKeyModule-->>SmartAccount: Invalid
         SmartAccount-->>Bundler: Validation failed
-        Bundler-->>AIAgent: Revert
-        AIAgent->>UI: Log error
+        Bundler-->>AutomationScript: Revert
+        AutomationScript->>UI: Log error
         UI->>User: Alert: Action blocked by permissions
     end
 
@@ -320,16 +191,16 @@ sequenceDiagram
     SmartAccount->>SessionKeyModule: Mark session key inactive
     SessionKeyModule-->>User: Session key revoked
 
-    Note over AIAgent: All future attempts will fail
+    Note over AutomationScript: All future attempts will fail
 ```
 
 ### Permission Matrix
 
-| Actor | Can Deploy Account | Can Deposit | Can Withdraw to User | Can Withdraw to Agent | Can Transfer to Arbitrary | Can Revoke Session Key |
+| Actor | Can Deploy Account | Can Deposit | Can Withdraw to User | Can Withdraw to Script | Can Transfer to Arbitrary | Can Revoke Session Key |
 |-------|-------------------|-------------|---------------------|----------------------|--------------------------|------------------------|
-| **User (Owner EOA)** | ✅ | ✅ | ✅ | ❌ | ✅ (Full Control) | ✅ |
-| **AI Agent (Session Key)** | ❌ | ✅ (to whitelisted protocols) | ❌ | ❌ | ❌ | ❌ |
-| **Smart Account** | N/A | ✅ (executes) | ✅ (executes) | ❌ | ✅ (if owner approves) | N/A |
+| **User (Owner EOA)** | Yes | Yes | Yes | No | Yes (Full Control) | Yes |
+| **Automation Script (Session Key)** | No | Yes (to whitelisted protocols) | No | No | No | No |
+| **Smart Account** | N/A | Yes (executes) | Yes (executes) | No | Yes (if owner approves) | N/A |
 
 ### Critical Security Constraints
 
@@ -353,7 +224,7 @@ sequenceDiagram
 
 ---
 
-## 4. AI Agent Decision & Execution Flow
+## 3. Deterministic Rules Engine - Decision & Execution Flow
 
 ```mermaid
 flowchart TD
@@ -371,13 +242,14 @@ flowchart TD
 
     CURRENT_STATE --> POSITIONS{Read Smart Account<br/>positions per protocol}
 
-    POSITIONS --> CALC[Calculate Yield Optimization]
+    POSITIONS --> CALC[Apply Deterministic Rules]
 
-    subgraph CALC_LOGIC[Calculation Logic]
-        COMPARE[Compare APYs across protocols]
-        RISK[Apply risk filters]
-        USER_PREF[Check user preferences]
-        THRESHOLD{Delta > Threshold?<br/>e.g., >0.5% APY gain}
+    subgraph CALC_LOGIC[Deterministic Rule Logic]
+        COMPARE[Rule 1: Compare APYs across protocols]
+        RISK[Rule 2: Apply risk filters]
+        USER_PREF[Rule 3: Check user preferences]
+        GAS_CHECK[Rule 4: Calculate gas cost impact]
+        THRESHOLD{Rule 5: Delta > Threshold?<br/>e.g., >0.5% APY net gain}
     end
 
     CALC --> CALC_LOGIC
@@ -411,8 +283,8 @@ flowchart TD
         SENDER[sender: Smart Account]
         NONCE[nonce: get from EntryPoint]
         CALLDATA[callData: executeBatch]
-        WITHDRAW_CALL[→ withdraw from Protocol A]
-        DEPOSIT_CALL[→ deposit to Protocol B]
+        WITHDRAW_CALL[withdraw from Protocol A]
+        DEPOSIT_CALL[deposit to Protocol B]
         SIG[signature: signed by session key]
     end
 
@@ -448,50 +320,294 @@ flowchart TD
     style END fill:#9E9E9E
 ```
 
-### Decision Algorithm (Pseudocode)
+**Note: APY Normalization**
+
+The "Normalize to FXRP-native APY" step converts each protocol's yield into a standardized, comparable format: how much actual FXRP is earned per 100 FXRP deposited over one year. This enables comparison across protocols that may express returns differently (secondary reward tokens, hidden fees, etc.).
+
+### Deterministic Rules Engine - Python Implementation
 
 ```python
-def optimize_yield(smart_account_address, user_preferences):
-    # Step 1: Fetch current state
-    current_positions = get_positions(smart_account_address)
-    # {protocol: amount} e.g., {"Kinetic": 1000, "Firelight": 500}
+"""
+Kimera Yield Optimizer - Deterministic Rules Engine
+No AI/ML components - pure rule-based decision making
+"""
 
-    # Step 2: Fetch APYs
-    apys = fetch_normalized_apys()
-    # {"Kinetic": 5.2, "Firelight": 6.8, "VaultX": 4.1}
+from dataclasses import dataclass
+from enum import Enum
+from typing import Dict, List, Optional
+import logging
 
-    # Step 3: Filter by user preferences
-    allowed_protocols = user_preferences.allowed_protocols
-    apys_filtered = {p: apy for p, apy in apys.items() if p in allowed_protocols}
+logger = logging.getLogger(__name__)
 
-    # Step 4: Find best opportunity
-    best_protocol = max(apys_filtered, key=apys_filtered.get)
-    best_apy = apys_filtered[best_protocol]
 
-    # Step 5: Check threshold
-    rebalance_threshold = 0.5  # 0.5% minimum gain
+class RiskTolerance(Enum):
+    CONSERVATIVE = "conservative"
+    MODERATE = "moderate"
+    AGGRESSIVE = "aggressive"
 
-    for current_protocol, amount in current_positions.items():
-        if amount > 0:
-            current_apy = apys_filtered.get(current_protocol, 0)
-            delta = best_apy - current_apy
 
-            if delta > rebalance_threshold and best_protocol != current_protocol:
-                return {
-                    "action": "rebalance",
-                    "from_protocol": current_protocol,
-                    "to_protocol": best_protocol,
-                    "amount": amount,
-                    "apy_delta": delta,
-                    "reason": f"Moving to higher yield: {delta:.2f}% improvement"
-                }
+@dataclass
+class ProtocolYield:
+    protocol_name: str
+    fxrp_apy: float  # Annual Percentage Yield
+    tvl: float  # Total Value Locked
+    utilization_rate: float
+    last_updated: int  # timestamp
 
-    return {"action": "hold", "reason": "No significant yield improvement"}
+
+@dataclass
+class UserPreferences:
+    smart_account_address: str
+    allowed_protocols: List[str]
+    risk_tolerance: RiskTolerance
+    rebalance_threshold: float  # minimum APY delta %
+    min_position_size: float  # minimum FXRP to consider rebalancing
+    session_key_id: str
+    is_active: bool
+
+
+@dataclass
+class RebalanceIntent:
+    intent_id: str
+    from_protocol: str
+    to_protocol: str
+    amount: float
+    gross_apy_delta: float
+    estimated_gas_cost: float
+    net_apy_delta: float
+    justification: str
+    status: str  # "pending" | "executed" | "failed" | "skipped"
+
+
+class DeterministicRulesEngine:
+    """
+    Pure rule-based yield optimization engine.
+    All decisions are deterministic and reproducible.
+    """
+
+    # Configuration constants
+    DEFAULT_REBALANCE_THRESHOLD = 0.5  # 0.5% minimum net APY gain
+    MIN_TVL_THRESHOLD = 100_000  # $100k minimum TVL for safety
+    MAX_UTILIZATION_RATE = 0.95  # 95% max utilization
+    CONSERVATIVE_MAX_APY = 15.0  # Suspicious if APY > 15%
+    MODERATE_MAX_APY = 30.0
+    AGGRESSIVE_MAX_APY = 100.0
+
+    def __init__(self, gas_price_gwei: float = 25.0):
+        self.gas_price_gwei = gas_price_gwei
+        self.estimated_gas_per_rebalance = 300_000  # gas units
+
+    def optimize_yield(
+        self,
+        current_positions: Dict[str, float],
+        protocol_yields: Dict[str, ProtocolYield],
+        user_preferences: UserPreferences,
+        fxrp_price_usd: float = 0.5
+    ) -> Optional[RebalanceIntent]:
+        """
+        Main entry point for yield optimization.
+        Returns a RebalanceIntent if action is needed, None otherwise.
+        """
+
+        # Rule 0: Check if automation is active
+        if not user_preferences.is_active:
+            logger.info("Automation is disabled for this user")
+            return None
+
+        # Rule 1: Filter protocols by user preferences
+        allowed_yields = self._filter_by_allowed_protocols(
+            protocol_yields, user_preferences.allowed_protocols
+        )
+
+        if not allowed_yields:
+            logger.warning("No allowed protocols with yield data")
+            return None
+
+        # Rule 2: Apply risk filters based on user tolerance
+        safe_yields = self._apply_risk_filters(
+            allowed_yields, user_preferences.risk_tolerance
+        )
+
+        if not safe_yields:
+            logger.warning("No protocols passed risk filters")
+            return None
+
+        # Rule 3: Find the best opportunity
+        best_protocol, best_apy = self._find_best_yield(safe_yields)
+
+        # Rule 4: Calculate gas cost impact
+        gas_cost_fxrp = self._calculate_gas_cost_fxrp(fxrp_price_usd)
+
+        # Rule 5: Evaluate each current position for rebalancing
+        for current_protocol, amount in current_positions.items():
+            if amount < user_preferences.min_position_size:
+                continue
+
+            if current_protocol not in allowed_yields:
+                continue
+
+            current_apy = allowed_yields[current_protocol].fxrp_apy
+
+            # Calculate deltas
+            gross_delta = best_apy - current_apy
+
+            # Annualized gas cost as percentage of position
+            gas_cost_annual_pct = (gas_cost_fxrp / amount) * 100
+
+            net_delta = gross_delta - gas_cost_annual_pct
+
+            # Rule 6: Check threshold
+            threshold = user_preferences.rebalance_threshold or self.DEFAULT_REBALANCE_THRESHOLD
+
+            if net_delta > threshold and best_protocol != current_protocol:
+                justification = (
+                    f"Moving {amount:.2f} FXRP from {current_protocol} "
+                    f"({current_apy:.2f}% APY) to {best_protocol} ({best_apy:.2f}% APY). "
+                    f"Gross improvement: {gross_delta:.2f}%, "
+                    f"Gas cost impact: {gas_cost_annual_pct:.2f}%, "
+                    f"Net improvement: {net_delta:.2f}%"
+                )
+
+                logger.info(f"Rebalance decision: {justification}")
+
+                return RebalanceIntent(
+                    intent_id=f"intent_{current_protocol}_{best_protocol}_{int(amount)}",
+                    from_protocol=current_protocol,
+                    to_protocol=best_protocol,
+                    amount=amount,
+                    gross_apy_delta=gross_delta,
+                    estimated_gas_cost=gas_cost_fxrp,
+                    net_apy_delta=net_delta,
+                    justification=justification,
+                    status="pending"
+                )
+
+        logger.info("No rebalancing needed - all positions optimal or below threshold")
+        return None
+
+    def _filter_by_allowed_protocols(
+        self,
+        yields: Dict[str, ProtocolYield],
+        allowed: List[str]
+    ) -> Dict[str, ProtocolYield]:
+        """Rule 1: Filter by user's allowed protocol list"""
+        return {
+            name: data for name, data in yields.items()
+            if name in allowed
+        }
+
+    def _apply_risk_filters(
+        self,
+        yields: Dict[str, ProtocolYield],
+        risk_tolerance: RiskTolerance
+    ) -> Dict[str, ProtocolYield]:
+        """Rule 2: Apply risk-based filters"""
+
+        # Determine max APY based on risk tolerance
+        max_apy_limits = {
+            RiskTolerance.CONSERVATIVE: self.CONSERVATIVE_MAX_APY,
+            RiskTolerance.MODERATE: self.MODERATE_MAX_APY,
+            RiskTolerance.AGGRESSIVE: self.AGGRESSIVE_MAX_APY
+        }
+        max_apy = max_apy_limits[risk_tolerance]
+
+        filtered = {}
+        for name, data in yields.items():
+            # Check TVL minimum
+            if data.tvl < self.MIN_TVL_THRESHOLD:
+                logger.debug(f"Skipping {name}: TVL {data.tvl} below minimum")
+                continue
+
+            # Check utilization rate
+            if data.utilization_rate > self.MAX_UTILIZATION_RATE:
+                logger.debug(f"Skipping {name}: utilization {data.utilization_rate} too high")
+                continue
+
+            # Check suspicious APY
+            if data.fxrp_apy > max_apy:
+                logger.warning(f"Skipping {name}: APY {data.fxrp_apy}% exceeds risk threshold")
+                continue
+
+            # Check for negative APY (shouldn't happen, but safety check)
+            if data.fxrp_apy < 0:
+                logger.warning(f"Skipping {name}: negative APY detected")
+                continue
+
+            filtered[name] = data
+
+        return filtered
+
+    def _find_best_yield(
+        self,
+        yields: Dict[str, ProtocolYield]
+    ) -> tuple[str, float]:
+        """Rule 3: Find the protocol with highest APY"""
+        best_protocol = max(yields, key=lambda x: yields[x].fxrp_apy)
+        best_apy = yields[best_protocol].fxrp_apy
+        return best_protocol, best_apy
+
+    def _calculate_gas_cost_fxrp(self, fxrp_price_usd: float) -> float:
+        """Rule 4: Calculate gas cost in FXRP terms"""
+        # Gas cost in native token (FLR)
+        gas_cost_flr = (self.estimated_gas_per_rebalance * self.gas_price_gwei) / 1e9
+
+        # Assuming FLR price ~ $0.02 for estimation
+        flr_price_usd = 0.02
+        gas_cost_usd = gas_cost_flr * flr_price_usd
+
+        # Convert to FXRP
+        gas_cost_fxrp = gas_cost_usd / fxrp_price_usd
+
+        return gas_cost_fxrp
+```
+
+### Decision Rules Summary
+
+```
+KIMERA DETERMINISTIC REBALANCING RULES
+======================================
+
+Rule 1: PROTOCOL ALLOWLIST
+- Only consider protocols explicitly allowed by user
+- User configures this via UI during setup
+
+Rule 2: RISK FILTERS
+- TVL must be > $100,000 (avoid low-liquidity protocols)
+- Utilization rate must be < 95% (ensure liquidity)
+- APY must be within risk tolerance bounds:
+  - Conservative: max 15% APY
+  - Moderate: max 30% APY
+  - Aggressive: max 100% APY
+- Reject negative or zero APY
+
+Rule 3: BEST YIELD SELECTION
+- Select protocol with highest APY that passes all filters
+- Simple max() operation - no ML or predictions
+
+Rule 4: GAS COST CALCULATION
+- Estimate gas cost per rebalance (~300k gas units)
+- Convert to FXRP terms using current prices
+- Calculate annualized impact on position
+
+Rule 5: NET BENEFIT THRESHOLD
+- Gross APY delta = new_apy - current_apy
+- Net APY delta = gross_delta - gas_cost_impact
+- Only rebalance if net_delta > threshold (default 0.5%)
+
+Rule 6: POSITION MINIMUM
+- Skip positions below minimum size (configurable)
+- Prevents gas-negative rebalancing for small amounts
+
+EXECUTION RULES:
+- Run on schedule (default: every 4 hours)
+- Maximum 1 rebalance per cycle per user
+- Log all decisions with full justification
+- Alert user on errors or blocked actions
 ```
 
 ---
 
-## 5. Data Flow Diagram
+## 4. Data Flow Diagram
 
 ```mermaid
 graph LR
@@ -503,18 +619,18 @@ graph LR
         FDC_READER[FDC Data Reader]
     end
 
-    subgraph "AI Agent - Data Layer"
+    subgraph "Automation Script - Data Layer"
         FETCHER[Data Fetcher Service]
         CACHE[Redis Cache - Optional]
         NORMALIZER[Yield Normalizer]
     end
 
-    subgraph "AI Agent - Strategy Layer"
-        OPTIMIZER[Yield Optimizer]
-        DECISION[Decision Engine]
+    subgraph "Automation Script - Rules Layer"
+        RULES[Deterministic Rules Engine]
+        DECISION[Decision Output]
     end
 
-    subgraph "AI Agent - Execution Layer"
+    subgraph "Automation Script - Execution Layer"
         TX_BUILDER[Transaction Builder]
         SIGNER[Session Key Signer]
         BUNDLER_CLIENT[Bundler Client]
@@ -535,8 +651,8 @@ graph LR
     FETCHER -->|Store| CACHE
     CACHE -->|Read| NORMALIZER
 
-    NORMALIZER -->|Standardized yields| OPTIMIZER
-    OPTIMIZER -->|Best strategy| DECISION
+    NORMALIZER -->|Standardized yields| RULES
+    RULES -->|Decision| DECISION
 
     DECISION -->|Intent| TX_BUILDER
     TX_BUILDER -->|UserOp| SIGNER
@@ -549,40 +665,46 @@ graph LR
 
     style FETCHER fill:#4CAF50
     style NORMALIZER fill:#2196F3
-    style DECISION fill:#FF9800
+    style RULES fill:#FF9800
     style SIGNER fill:#F44336
     style FDC_READER fill:#9C27B0
 ```
 
 ---
 
-## 6. Technical Refinements & Recommendations
+## 5. Technical Refinements & Recommendations
 
-### 6.1 Architecture Strengths
+### 5.1 Architecture Strengths
 
-✅ **Well-Defined Scope**
+**Deterministic & Auditable**
+- All decisions follow explicit rules
+- No black-box AI/ML components
+- Every rebalance decision can be explained and reproduced
+- Easy to debug and verify behavior
+
+**Well-Defined Scope**
 - Clear PoC boundaries prevent feature creep
 - Single-asset (FXRP) reduces complexity significantly
 - Explicit non-goals prevent misaligned expectations
 
-✅ **Security-First Approach**
+**Security-First Approach**
 - Session keys with explicit allowlists
 - No arbitrary transfer permissions
 - User maintains full ownership
 
-✅ **Pragmatic Centralization**
-- AWS-hosted agent acceptable for PoC
+**Pragmatic Centralization**
+- AWS-hosted script acceptable for PoC
 - Allows rapid iteration vs. full decentralization
 - Clear path to decentralization in Phase 2+
 
-### 6.2 Critical Gaps & Additions Needed
+### 5.2 Critical Gaps & Additions Needed
 
-#### 🔴 **Critical: ERC-4337 Infrastructure Validation**
+#### Critical: ERC-4337 Infrastructure Validation
 
 **Problem:** Etherspot claims Flare support, but bundler/paymaster availability is unconfirmed.
 
 **Recommendation:**
-```markdown
+```
 BEFORE any development:
 1. Deploy a test Smart Account on Coston2 using Etherspot SDK
 2. Attempt to submit a UserOperation via bundler
@@ -595,26 +717,13 @@ IF bundler infrastructure is immature:
 - Use direct EOA execution for PoC (defeats purpose of session keys)
 ```
 
-**Add to Deliverables:**
-```
-A0. ERC-4337 Infrastructure Validation (Pre-Development)
-- Coston2 bundler availability test
-- UserOperation simulation
-- Gas cost analysis
-- Paymaster integration test (if applicable)
-
-Timeline: Week 1 (blocking)
-```
-
 ---
 
-#### **Session Key Lifecycle**
+#### Session Key Lifecycle
 
 **Decision:** Non-expiring session keys for simplicity.
 
-```markdown
-A2b. Session Key Lifecycle Management
-
+```
 Policy:
 - Session keys do NOT expire by default
 - User can revoke at any time via UI (immediate effect)
@@ -622,7 +731,7 @@ Policy:
 
 Rationale:
 - Simpler UX: set once and forget
-- No risk of agent stopping unexpectedly due to expiry
+- No risk of script stopping unexpectedly due to expiry
 - User retains full control via manual revocation
 - Core security model (allowlists) is unchanged
 
@@ -631,29 +740,13 @@ Future consideration (Phase 2+):
 - Auto-rotation could be implemented if needed
 ```
 
-**Add to B3:**
-```markdown
-B3b. Session Key Management Service
-
-Deliverables:
-- Secure key storage in AWS Secrets Manager
-- Revocation sync: detect on-chain revocation and stop agent execution
-- Key status monitoring in dashboard
-```
-
 ---
 
-#### 🟡 **Enhancement: Gas Estimation & Failure Recovery**
+#### Enhancement: Transaction Failure Recovery
 
-**Current Spec:** "Gas estimation logic" in B3, but no failure recovery detail.
-
-**Recommendation:**
-
-Add to B3:
-```markdown
-B3c. Transaction Failure Recovery
-
+```
 Scenarios & Handling:
+
 1. Insufficient gas:
    - Pre-flight simulation detects
    - Alert user to top up Smart Account
@@ -681,16 +774,9 @@ Monitoring:
 
 ---
 
-#### 🟡 **Enhancement: Rebalancing Cost Analysis**
+#### Enhancement: Net Yield Calculation (After Gas)
 
-**Missing:** No cost/benefit analysis for rebalancing.
-
-**Recommendation:**
-
-Add to B2:
-```markdown
-B2b. Net Yield Calculation (After Gas)
-
+```
 Decision logic must include:
 1. Gross APY delta: new_apy - current_apy
 2. Estimated gas cost: ~$X per rebalance
@@ -711,12 +797,9 @@ This prevents gas-negative rebalancing for small positions.
 
 ---
 
-#### 🟢 **Nice-to-Have: Circuit Breaker**
+#### Nice-to-Have: Circuit Breaker
 
-**Add to E (Security):**
-```markdown
-E3. Circuit Breaker Mechanism
-
+```
 Trigger Conditions:
 - Transaction failure rate > 50% over 1 hour
 - Detected price oracle anomaly (APY > 1000%)
@@ -724,7 +807,7 @@ Trigger Conditions:
 - User balance decreased > 10% in single transaction (potential exploit)
 
 Actions:
-- Immediately disable AI agent execution
+- Immediately disable script execution
 - Revoke session key automatically
 - Alert user + team via email/Slack
 - Require manual re-enable via UI
@@ -738,14 +821,9 @@ Cost: $2k-3k (highly recommended for PoC)
 
 ---
 
-### 6.3 Data Model Specification
+### 5.3 Data Model Specification
 
-**Add to Technical Spec:**
-
-```markdown
-## Data Models
-
-### User Preferences (Frontend → DB → Agent)
+**User Preferences (Frontend → DB → Script)**
 ```typescript
 interface UserPreferences {
   smartAccountAddress: string;
@@ -757,7 +835,7 @@ interface UserPreferences {
 }
 ```
 
-### Yield Data (Agent Internal)
+**Yield Data (Script Internal)**
 ```typescript
 interface ProtocolYield {
   protocolName: string;
@@ -769,7 +847,7 @@ interface ProtocolYield {
 }
 ```
 
-### Rebalance Intent (Agent Output)
+**Rebalance Intent (Script Output)**
 ```typescript
 interface RebalanceIntent {
   intentId: string;
@@ -777,34 +855,27 @@ interface RebalanceIntent {
   fromProtocol: string;
   toProtocol: string;
   amount: string; // Wei format
-  apyDelta: number;
+  grossApyDelta: number;
   estimatedGasCost: string;
-  netBenefit: number;
-  justification: string; // human-readable
-  userOperation?: UserOperationStruct; // if executed
+  netApyDelta: number;
+  justification: string; // human-readable, deterministic
   status: "pending" | "executed" | "failed" | "skipped";
 }
-```
 ```
 
 ---
 
-### 6.4 Testing Requirements (Expand Section E)
+### 5.4 Testing Requirements
 
-**Current Spec:** Unit tests only.
-
-**Recommendation:**
-
-```markdown
-E. Security & Testing (Enhanced)
-
-E1. Unit Tests (Solidity)
-- Session key permission boundaries (20+ test cases)
-- Adapter correctness (deposit/withdraw flows)
-- Edge cases: zero amounts, reentrancy, access control
+```
+E1. Unit Tests (Python Rules Engine)
+- Test each rule in isolation
+- Edge cases: zero APY, negative APY, equal APYs
+- Threshold boundary testing
+- Gas cost calculation accuracy
 
 E2. Integration Tests
-- Full flow: User deposits → AI rebalances → User withdraws
+- Full flow: User deposits → Script rebalances → User withdraws
 - Session key lifecycle: create → use → revoke → attempt use (should fail)
 - Bundler interaction tests
 - Multi-protocol rebalancing
@@ -828,46 +899,24 @@ E5. User Acceptance Testing
 - 3-5 external testers (non-technical users)
 - Validate "one-click UX" claim
 - Gather feedback on transparency/trust
-
-
 ```
 
 ---
 
-### 6.5 Deployment & Operations
+### 5.5 Deployment & Operations
 
-**Missing from current spec.**
-
-**Add Section F:**
-
-```markdown
-F. Deployment & Operations Playbook
-
-F1. Smart Contract Deployment
-1. Deploy on Coston2 (testnet)
-   - Account Factory
-   - Session Key Module
-   - Protocol Adapters
-   - Verify on Flare Explorer
-
-2. Deployment script with Hardhat/Foundry
-   - Reproducible builds
-   - Multi-sig upgrade control (optional for PoC)
-
-F2. AI Agent Deployment (AWS)
+**Automation Script Deployment (AWS)**
+```
 Architecture:
 - Lambda for scheduled execution (every 4 hours)
 - EC2 for continuous monitoring (optional)
 - Secrets Manager for session keys
 - RDS/DynamoDB for state persistence
 - CloudWatch for logging
+```
 
-F3. Frontend Deployment
-- Static hosting (Vercel/Netlify)
-- Environment configs for Coston2 vs. Mainnet
-- Analytics integration (PostHog/Mixpanel)
-
-F4. Monitoring & Alerting
+**Monitoring & Alerting**
+```
 Metrics:
 - Rebalance execution rate
 - Transaction failure rate
@@ -877,10 +926,12 @@ Metrics:
 
 Alerts:
 - Transaction failures > 10% → Slack alert
-- Session key expiry <7 days → Email user
+- Session key revoked → Log and stop execution
 - Circuit breaker triggered → Emergency alert
+```
 
-F5. Incident Response
+**Incident Response**
+```
 Scenarios:
 - Protocol exploit detected
 - Bundler outage
@@ -888,15 +939,15 @@ Scenarios:
 - Session key leak
 
 Response:
-- Pause agent execution
+- Pause script execution
 - Revoke all session keys
 - Notify users via UI banner
 - Post-mortem after resolution
-
 ```
+
 ---
 
-## 7. Risk Mitigation Summary
+## 6. Risk Mitigation Summary
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|------------|--------|------------|
@@ -909,7 +960,7 @@ Response:
 
 ---
 
-## 8. Next Steps
+## 7. Next Steps
 
 1. **Validate ERC-4337 on Flare (Week 1)**
    - Deploy test Smart Account on Coston2
@@ -933,13 +984,7 @@ Response:
 
 ## Appendix A: Technology Stack Recommendation
 
-### Smart Contracts
-- **Language:** Solidity 0.8.23+
-- **Framework:** Foundry (faster than Hardhat for testing)
-- **Account Abstraction:** Etherspot Modular SDK (if Flare support confirmed) OR custom ERC-4337 implementation
-- **Testing:** Foundry fuzzing + Echidna (optional)
-
-### Off-Chain Agent
+### Off-Chain Automation Script
 - **Language:** Python 3.11+
 - **Framework:** FastAPI (for future API exposure)
 - **Blockchain Library:** Web3.py
@@ -960,5 +1005,22 @@ Response:
 
 ---
 
+## Appendix B: Deterministic Rules vs AI Agent Comparison
 
-**End of Architecture Review**
+| Aspect | Deterministic Rules (This Doc) | AI Agent (Original) |
+|--------|-------------------------------|---------------------|
+| **Predictability** | 100% - same inputs = same outputs | Variable - may change decisions |
+| **Explainability** | Full - every decision has clear justification | Limited - "black box" reasoning |
+| **Auditability** | Easy - rule set is explicit | Hard - requires ML model inspection |
+| **Maintenance** | Simple - modify rules directly | Complex - requires retraining |
+| **Adaptability** | Manual - requires code changes | Automatic - learns from data |
+| **Edge Cases** | Must be explicitly coded | May handle some automatically |
+| **User Trust** | High - behavior is transparent | Lower - "AI" can seem opaque |
+| **Development Cost** | Lower - no ML infrastructure | Higher - needs ML pipeline |
+| **Operational Cost** | Lower - no inference costs | Higher - model serving costs |
+
+**Recommendation for PoC:** Deterministic rules provide better transparency, lower cost, and easier debugging. AI/ML can be explored in Phase 2+ once the core platform is validated.
+
+---
+
+**End of Architecture Review (Deterministic Version)**
