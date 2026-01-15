@@ -320,6 +320,10 @@ flowchart TD
     style END fill:#9E9E9E
 ```
 
+**Note: APY Normalization**
+
+The "Normalize to FXRP-native APY" step converts each protocol's yield into a standardized, comparable format: how much actual FXRP is earned per 100 FXRP deposited over one year. This enables comparison across protocols that may express returns differently (secondary reward tokens, hidden fees, etc.).
+
 ### Deterministic Rules Engine - Python Implementation
 
 ```python
